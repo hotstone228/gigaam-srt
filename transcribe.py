@@ -6,13 +6,16 @@ activity detection and chunking internally. It supports hours long audio files a
 produces a standard ``.srt`` subtitle file.
 
 Example:
-    python transcribe.py input.wav --hf-token YOUR_HF_TOKEN --output subtitles.srt
+    python transcribe.py input.mp3 --hf-token YOUR_HF_TOKEN --output subtitles.srt
 
 Before running install dependencies:
     pip install gigaam[longform]
 """
 import argparse
 import os
+import shutil
+import subprocess
+import tempfile
 from typing import List, Dict, Tuple
 
 import gigaam
@@ -40,6 +43,28 @@ def write_srt(
                 f"{format_srt_timestamp(start)} --> {format_srt_timestamp(end)}\n"
             )
             srt_file.write(f"{transcription}\n\n")
+
+
+def ensure_wav(path: str) -> Tuple[str, bool]:
+    """Return a WAV path for ``path`` converting with ffmpeg if needed.
+
+    Returns the path to a WAV file and a flag indicating whether the file is
+    temporary and should be deleted afterwards.
+    """
+    if path.lower().endswith(".wav"):
+        return path, False
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("ffmpeg is required to convert audio formats to WAV")
+    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
+    subprocess.run(
+        ["ffmpeg", "-y", "-i", path, tmp_path],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return tmp_path, True
 
 
 def main() -> None:
@@ -92,12 +117,17 @@ def main() -> None:
         os.environ["HF_TOKEN"] = args.hf_token
 
     model = gigaam.load_model(args.model, device=args.device)
-    segments = model.transcribe_longform(
-        args.audio,
-        max_duration=args.max_duration,
-        min_duration=args.min_duration,
-        new_chunk_threshold=args.new_chunk_threshold,
-    )
+    wav_path, is_temp = ensure_wav(args.audio)
+    try:
+        segments = model.transcribe_longform(
+            wav_path,
+            max_duration=args.max_duration,
+            min_duration=args.min_duration,
+            new_chunk_threshold=args.new_chunk_threshold,
+        )
+    finally:
+        if is_temp:
+            os.remove(wav_path)
 
     output_path = args.output or os.path.splitext(args.audio)[0] + ".srt"
     write_srt(segments, output_path)
