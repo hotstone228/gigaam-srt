@@ -6,7 +6,7 @@ activity detection and chunking internally. It supports hours long audio files a
 produces a standard ``.srt`` subtitle file.
 
 Example:
-    python transcribe.py input.mp3 --hf-token YOUR_HF_TOKEN --output subtitles.srt
+    python transcribe.py input1.mp3 input2.mp3 --hf-token YOUR_HF_TOKEN
 
 Before running install dependencies:
     pip install gigaam[longform]
@@ -71,7 +71,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Transcribe audio into Russian SRT subtitles using GigaAM"
     )
-    parser.add_argument("audio", help="Path to the input audio file")
+    parser.add_argument(
+        "audio", nargs="+", help="Path(s) to input audio file(s)"
+    )
     parser.add_argument(
         "-o",
         "--output",
@@ -113,24 +115,28 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    if len(args.audio) > 1 and args.output:
+        parser.error("--output can only be used with a single input audio")
+
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
     model = gigaam.load_model(args.model, device=args.device)
-    wav_path, is_temp = ensure_wav(args.audio)
-    try:
-        segments = model.transcribe_longform(
-            wav_path,
-            max_duration=args.max_duration,
-            min_duration=args.min_duration,
-            new_chunk_threshold=args.new_chunk_threshold,
-        )
-    finally:
-        if is_temp:
-            os.remove(wav_path)
+    for audio_path in args.audio:
+        wav_path, is_temp = ensure_wav(audio_path)
+        try:
+            segments = model.transcribe_longform(
+                wav_path,
+                max_duration=args.max_duration,
+                min_duration=args.min_duration,
+                new_chunk_threshold=args.new_chunk_threshold,
+            )
+        finally:
+            if is_temp:
+                os.remove(wav_path)
 
-    output_path = args.output or os.path.splitext(args.audio)[0] + ".srt"
-    write_srt(segments, output_path)
+        output_path = args.output or os.path.splitext(audio_path)[0] + ".srt"
+        write_srt(segments, output_path)
 
 
 if __name__ == "__main__":
