@@ -19,10 +19,13 @@ order to download the VAD models used for splitting long audio files.
 ## Usage
 
 ```bash
-python transcribe.py /path/to/audio.mp3 \
-    --hf-token YOUR_TOKEN \
-    --output subtitles.srt
+python transcribe.py /path/to/audio1.mp3 /path/to/audio2.mp3 \
+    --hf-token YOUR_TOKEN
 ```
+
+For a single file you may also specify `--output subtitles.srt` to set the
+destination path. When multiple inputs are provided, `.srt` files are written
+next to each audio.
 
 Additional useful options:
 
