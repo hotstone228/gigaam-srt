@@ -142,7 +142,15 @@ def main() -> None:
         description="Transcribe audio into Russian SRT subtitles using GigaAM"
     )
     parser.add_argument(
-        "audio", nargs="+", help="Path(s) to input media file(s) or directories"
+        "inputs", nargs="*", help="Path(s) to input media file(s) or directories"
+    )
+    parser.add_argument(
+        "-d",
+        "--directory",
+        dest="directories",
+        action="append",
+        default=[],
+        help="Directory to scan for media files (can be specified multiple times)",
     )
     parser.add_argument(
         "-o",
@@ -221,8 +229,17 @@ def main() -> None:
     else:
         logging.basicConfig(level=logging.CRITICAL + 1)
 
+    combined_inputs: List[str] = []
+    if args.inputs:
+        combined_inputs.extend(args.inputs)
+    if args.directories:
+        combined_inputs.extend(args.directories)
+
+    if not combined_inputs:
+        parser.error("Please provide at least one media file or directory to process.")
+
     try:
-        audio_inputs = collect_media_paths(args.audio, args.recursive)
+        audio_inputs = collect_media_paths(combined_inputs, args.recursive)
     except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
 
