@@ -36,6 +36,9 @@ Additional useful options:
 * `--device` – specify inference device, e.g. `cuda` or `cpu`.
 * `--recursive` – look through folders recursively for audio/video files without
   an `.srt` subtitle.
+* `--ignore-errors` / `--raise-errors` – keep processing other files after a failure
+  (default) or stop immediately to view the traceback.
+* `--logging` / `--no-logging` – turn informational logging on or off.
 * `--max-duration`, `--min-duration`, `--new-chunk-threshold` – control how the audio is
   segmented before transcription.
 

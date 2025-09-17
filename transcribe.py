@@ -138,7 +138,6 @@ def collect_media_paths(inputs: Iterable[str], recursive: bool) -> List[str]:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Transcribe audio into Russian SRT subtitles using GigaAM"
     )
@@ -189,8 +188,38 @@ def main() -> None:
         action="store_true",
         help="Recursively search directories for media files",
     )
+    parser.add_argument(
+        "--ignore-errors",
+        dest="ignore_errors",
+        action="store_true",
+        help="Continue processing other files when transcription fails",
+    )
+    parser.add_argument(
+        "--raise-errors",
+        dest="ignore_errors",
+        action="store_false",
+        help="Stop immediately and show full tracebacks on errors",
+    )
+    parser.add_argument(
+        "--logging",
+        dest="logging_enabled",
+        action="store_true",
+        help="Show informational logging during processing",
+    )
+    parser.add_argument(
+        "--no-logging",
+        dest="logging_enabled",
+        action="store_false",
+        help="Disable logging output",
+    )
+    parser.set_defaults(ignore_errors=True, logging_enabled=True)
 
     args = parser.parse_args()
+
+    if args.logging_enabled:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    else:
+        logging.basicConfig(level=logging.CRITICAL + 1)
 
     try:
         audio_inputs = collect_media_paths(args.audio, args.recursive)
@@ -222,8 +251,10 @@ def main() -> None:
                 new_chunk_threshold=args.new_chunk_threshold,
             )
         except Exception as exc:
-            LOGGER.error("Transcription failed for %s: %s", audio_path, exc)
-            continue
+            if args.ignore_errors:
+                LOGGER.error("Transcription failed for %s: %s", audio_path, exc)
+                continue
+            raise
         finally:
             if is_temp:
                 os.remove(wav_path)
