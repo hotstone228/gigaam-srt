@@ -13,6 +13,7 @@ Before running install dependencies:
     pip install gigaam[longform]
 """
 import argparse
+import logging
 import os
 import shutil
 import subprocess
@@ -20,6 +21,9 @@ import tempfile
 from typing import Dict, Iterable, Iterator, List, Tuple
 
 import gigaam
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def format_srt_timestamp(seconds: float) -> str:
@@ -111,6 +115,11 @@ def collect_media_paths(inputs: Iterable[str], recursive: bool) -> List[str]:
         if not os.path.exists(original):
             raise FileNotFoundError(f"Input path does not exist: {original}")
         if os.path.isdir(original):
+            LOGGER.info(
+                "Scanning directory %s for media files%s",
+                original,
+                " recursively" if recursive else "",
+            )
             for candidate in _iter_directory_files(original, recursive):
                 if not is_media_file(candidate) or has_adjacent_srt(candidate):
                     continue
@@ -129,6 +138,7 @@ def collect_media_paths(inputs: Iterable[str], recursive: bool) -> List[str]:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     parser = argparse.ArgumentParser(
         description="Transcribe audio into Russian SRT subtitles using GigaAM"
     )
@@ -192,6 +202,8 @@ def main() -> None:
             "No audio or video files without adjacent SRT subtitles were found."
         )
 
+    LOGGER.info("Discovered %d media file(s) for transcription", len(audio_inputs))
+
     if args.output and len(audio_inputs) > 1:
         parser.error("--output can only be used with a single input media file")
 
@@ -200,6 +212,7 @@ def main() -> None:
 
     model = gigaam.load_model(args.model, device=args.device)
     for audio_path in audio_inputs:
+        LOGGER.info("Processing %s", audio_path)
         wav_path, is_temp = ensure_wav(audio_path)
         try:
             segments = model.transcribe_longform(
@@ -208,12 +221,16 @@ def main() -> None:
                 min_duration=args.min_duration,
                 new_chunk_threshold=args.new_chunk_threshold,
             )
+        except Exception as exc:
+            LOGGER.error("Transcription failed for %s: %s", audio_path, exc)
+            continue
         finally:
             if is_temp:
                 os.remove(wav_path)
 
         output_path = args.output or os.path.splitext(audio_path)[0] + ".srt"
         write_srt(segments, output_path)
+        LOGGER.info("Saved subtitles to %s", output_path)
 
 
 if __name__ == "__main__":
