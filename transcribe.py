@@ -7,18 +7,23 @@ produces a standard ``.srt`` subtitle file.
 
 Example:
     python transcribe.py input1.mp3 input2.mp3 --hf-token YOUR_HF_TOKEN
+    python transcribe.py /path/to/folder --recursive
 
 Before running install dependencies:
     pip install gigaam[longform]
 """
 import argparse
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
-from typing import List, Dict, Tuple
+from typing import Dict, Iterable, Iterator, List, Tuple
 
 import gigaam
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def format_srt_timestamp(seconds: float) -> str:
@@ -67,12 +72,85 @@ def ensure_wav(path: str) -> Tuple[str, bool]:
     return tmp_path, True
 
 
+MEDIA_EXTENSIONS = {
+    ".aac",
+    ".aiff",
+    ".flac",
+    ".m4a",
+    ".mka",
+    ".mkv",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".webm",
+}
+
+
+def is_media_file(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in MEDIA_EXTENSIONS
+
+
+def has_adjacent_srt(path: str) -> bool:
+    return os.path.exists(os.path.splitext(path)[0] + ".srt")
+
+
+def _iter_directory_files(directory: str, recursive: bool) -> Iterator[str]:
+    if recursive:
+        for root, _, files in os.walk(directory):
+            for name in files:
+                yield os.path.join(root, name)
+    else:
+        for entry in os.scandir(directory):
+            if entry.is_file():
+                yield entry.path
+
+
+def collect_media_paths(inputs: Iterable[str], recursive: bool) -> List[str]:
+    discovered: List[str] = []
+    seen = set()
+    for original in inputs:
+        if not os.path.exists(original):
+            raise FileNotFoundError(f"Input path does not exist: {original}")
+        if os.path.isdir(original):
+            LOGGER.info(
+                "Scanning directory %s for media files%s",
+                original,
+                " recursively" if recursive else "",
+            )
+            for candidate in _iter_directory_files(original, recursive):
+                if not is_media_file(candidate) or has_adjacent_srt(candidate):
+                    continue
+                if candidate not in seen:
+                    seen.add(candidate)
+                    discovered.append(candidate)
+            continue
+        if not is_media_file(original):
+            raise ValueError(f"Unsupported media file: {original}")
+        if has_adjacent_srt(original):
+            continue
+        if original not in seen:
+            seen.add(original)
+            discovered.append(original)
+    return discovered
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Transcribe audio into Russian SRT subtitles using GigaAM"
     )
     parser.add_argument(
-        "audio", nargs="+", help="Path(s) to input audio file(s)"
+        "inputs", nargs="*", help="Path(s) to input media file(s) or directories"
+    )
+    parser.add_argument(
+        "-d",
+        "--directory",
+        dest="directories",
+        action="append",
+        default=[],
+        help="Directory to scan for media files (can be specified multiple times)",
     )
     parser.add_argument(
         "-o",
@@ -112,17 +190,75 @@ def main() -> None:
         default=0.2,
         help="Pause threshold (seconds) to start a new chunk",
     )
+    parser.add_argument(
+        "-r",
+        "--recursive",
+        action="store_true",
+        help="Recursively search directories for media files",
+    )
+    parser.add_argument(
+        "--ignore-errors",
+        dest="ignore_errors",
+        action="store_true",
+        help="Continue processing other files when transcription fails",
+    )
+    parser.add_argument(
+        "--raise-errors",
+        dest="ignore_errors",
+        action="store_false",
+        help="Stop immediately and show full tracebacks on errors",
+    )
+    parser.add_argument(
+        "--logging",
+        dest="logging_enabled",
+        action="store_true",
+        help="Show informational logging during processing",
+    )
+    parser.add_argument(
+        "--no-logging",
+        dest="logging_enabled",
+        action="store_false",
+        help="Disable logging output",
+    )
+    parser.set_defaults(ignore_errors=True, logging_enabled=True)
 
     args = parser.parse_args()
 
-    if len(args.audio) > 1 and args.output:
-        parser.error("--output can only be used with a single input audio")
+    if args.logging_enabled:
+        logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+    else:
+        logging.basicConfig(level=logging.CRITICAL + 1)
+
+    combined_inputs: List[str] = []
+    if args.inputs:
+        combined_inputs.extend(args.inputs)
+    if args.directories:
+        combined_inputs.extend(args.directories)
+
+    if not combined_inputs:
+        parser.error("Please provide at least one media file or directory to process.")
+
+    try:
+        audio_inputs = collect_media_paths(combined_inputs, args.recursive)
+    except (FileNotFoundError, ValueError) as exc:
+        parser.error(str(exc))
+
+    if not audio_inputs:
+        parser.error(
+            "No audio or video files without adjacent SRT subtitles were found."
+        )
+
+    LOGGER.info("Discovered %d media file(s) for transcription", len(audio_inputs))
+
+    if args.output and len(audio_inputs) > 1:
+        parser.error("--output can only be used with a single input media file")
 
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
     model = gigaam.load_model(args.model, device=args.device)
-    for audio_path in args.audio:
+    for audio_path in audio_inputs:
+        LOGGER.info("Processing %s", audio_path)
         wav_path, is_temp = ensure_wav(audio_path)
         try:
             segments = model.transcribe_longform(
@@ -131,12 +267,18 @@ def main() -> None:
                 min_duration=args.min_duration,
                 new_chunk_threshold=args.new_chunk_threshold,
             )
+        except Exception as exc:
+            if args.ignore_errors:
+                LOGGER.error("Transcription failed for %s: %s", audio_path, exc)
+                continue
+            raise
         finally:
             if is_temp:
                 os.remove(wav_path)
 
         output_path = args.output or os.path.splitext(audio_path)[0] + ".srt"
         write_srt(segments, output_path)
+        LOGGER.info("Saved subtitles to %s", output_path)
 
 
 if __name__ == "__main__":
