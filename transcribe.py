@@ -10,7 +10,10 @@ Example:
     python transcribe.py /path/to/folder --recursive
 
 Before running install dependencies:
-    pip install gigaam[longform]
+    pip install gigaam[longform] sberam
+
+For drag-and-drop GUI mode:
+    pip install tkinterdnd2
 """
 import argparse
 import logging
@@ -20,9 +23,12 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
-import gigaam
+if TYPE_CHECKING:  # pragma: no cover - imported for typing only
+    from gigaam import GigaAMModel  # type: ignore
+else:
+    GigaAMModel = Any  # type: ignore
 
 
 LOGGER = logging.getLogger(__name__)
@@ -140,7 +146,7 @@ def collect_media_paths(inputs: Iterable[str], recursive: bool) -> List[str]:
 
 
 def transcribe_audio_file(
-    model: "gigaam.GigaAMModel",  # type: ignore[name-defined]
+    model: "GigaAMModel",
     audio_path: str,
     args: argparse.Namespace,
     output_override: Optional[str] = None,
@@ -172,7 +178,7 @@ def transcribe_audio_file(
 
 
 def launch_drag_and_drop_gui(
-    model: "gigaam.GigaAMModel",  # type: ignore[name-defined]
+    model: "GigaAMModel",
     args: argparse.Namespace,
     initial_inputs: Optional[List[str]] = None,
 ) -> None:
@@ -286,7 +292,7 @@ def launch_drag_and_drop_gui(
             append_log("Добавлены файлы: " + ", ".join(files))
             task_queue.put(files)
 
-    drop_label.dnd_bind("<Drop>", on_drop)
+    drop_label.dnd_bind("<<Drop>>", on_drop)
 
     def on_close() -> None:
         stop_event.set()
@@ -300,6 +306,27 @@ def launch_drag_and_drop_gui(
 
     root.mainloop()
     worker_thread.join(timeout=1)
+
+
+def load_asr_model(model_name: str, device: Optional[str]) -> "GigaAMModel":
+    """Import required dependencies and return an initialized ASR model."""
+
+    try:
+        import sberam  # type: ignore  # noqa: F401
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "The 'sberam' package is required. Install it with 'pip install sberam'."
+        ) from exc
+
+    try:
+        import gigaam  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "The 'gigaam' package is required. Install it with "
+            "'pip install gigaam[longform]'."
+        ) from exc
+
+    return gigaam.load_model(model_name, device=device)
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -432,7 +459,10 @@ def main() -> None:
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
-    model = gigaam.load_model(args.model, device=args.device)
+    try:
+        model = load_asr_model(args.model, args.device)
+    except RuntimeError as exc:
+        parser.error(str(exc))
 
     if args.gui:
         try:
