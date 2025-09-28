@@ -10,7 +10,7 @@ Example:
     python transcribe.py /path/to/folder --recursive
 
 Before running install dependencies:
-    pip install gigaam[longform] sberam
+    pip install gigaam[longform]
 
 For drag-and-drop GUI mode:
     pip install tkinterdnd2
@@ -310,13 +310,6 @@ def launch_drag_and_drop_gui(
 
 def load_asr_model(model_name: str, device: Optional[str]) -> "GigaAMModel":
     """Import required dependencies and return an initialized ASR model."""
-
-    try:
-        import sberam  # type: ignore  # noqa: F401
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "The 'sberam' package is required. Install it with 'pip install sberam'."
-        ) from exc
 
     try:
         import gigaam  # type: ignore

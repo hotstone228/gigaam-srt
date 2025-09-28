@@ -7,7 +7,7 @@ SRT format.
 ## Requirements
 
 ```bash
-pip install gigaam[longform] sberam
+pip install gigaam[longform]
 
 # Optional: enable drag-and-drop GUI mode
 pip install tkinterdnd2
