@@ -11,16 +11,24 @@ Example:
 
 Before running install dependencies:
     pip install gigaam[longform]
+
+For drag-and-drop GUI mode:
+    pip install tkinterdnd2
 """
 import argparse
 import logging
 import os
+import queue
 import shutil
 import subprocess
 import tempfile
-from typing import Dict, Iterable, Iterator, List, Tuple
+import threading
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Tuple, TYPE_CHECKING
 
-import gigaam
+if TYPE_CHECKING:  # pragma: no cover - imported for typing only
+    from gigaam import GigaAMModel  # type: ignore
+else:
+    GigaAMModel = Any  # type: ignore
 
 
 LOGGER = logging.getLogger(__name__)
@@ -137,6 +145,182 @@ def collect_media_paths(inputs: Iterable[str], recursive: bool) -> List[str]:
     return discovered
 
 
+def transcribe_audio_file(
+    model: "GigaAMModel",
+    audio_path: str,
+    args: argparse.Namespace,
+    output_override: Optional[str] = None,
+) -> Optional[str]:
+    """Transcribe a single ``audio_path`` and return the output SRT path."""
+
+    LOGGER.info("Processing %s", audio_path)
+    wav_path, is_temp = ensure_wav(audio_path)
+    try:
+        segments = model.transcribe_longform(
+            wav_path,
+            max_duration=args.max_duration,
+            min_duration=args.min_duration,
+            new_chunk_threshold=args.new_chunk_threshold,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        if args.ignore_errors:
+            LOGGER.error("Transcription failed for %s: %s", audio_path, exc)
+            return None
+        raise
+    finally:
+        if is_temp:
+            os.remove(wav_path)
+
+    output_path = output_override or os.path.splitext(audio_path)[0] + ".srt"
+    write_srt(segments, output_path)
+    LOGGER.info("Saved subtitles to %s", output_path)
+    return output_path
+
+
+def launch_drag_and_drop_gui(
+    model: "GigaAMModel",
+    args: argparse.Namespace,
+    initial_inputs: Optional[List[str]] = None,
+) -> None:
+    """Launch a drag-and-drop GUI for sequential transcription."""
+
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+    except ImportError as exc:  # pragma: no cover - platform dependent
+        raise RuntimeError(
+            "Tkinter is required for --gui mode but is not available on this system"
+        ) from exc
+
+    try:
+        from tkinterdnd2 import DND_FILES, TkinterDnD  # type: ignore
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "The 'tkinterdnd2' package is required for drag-and-drop support. "
+            "Install it with 'pip install tkinterdnd2'."
+        ) from exc
+
+    task_queue: "queue.Queue[List[str]]" = queue.Queue()
+    stop_event = threading.Event()
+
+    root = TkinterDnD.Tk()
+    root.title("GigaAM SRT Transcriber")
+
+    status_var = tk.StringVar(value="Перетащите аудио или видео файлы в окно")
+
+    frame = tk.Frame(root, padx=20, pady=20)
+    frame.pack(fill="both", expand=True)
+
+    drop_label = tk.Label(
+        frame,
+        textvariable=status_var,
+        relief="groove",
+        borderwidth=2,
+        width=60,
+        height=10,
+        wraplength=400,
+        justify="center",
+    )
+    drop_label.pack(fill="both", expand=True)
+    drop_label.drop_target_register(DND_FILES)
+
+    log_text = tk.Text(frame, height=10, state="disabled")
+    log_text.pack(fill="both", expand=True, pady=(10, 0))
+
+    def append_log(message: str) -> None:
+        def _append() -> None:
+            log_text.configure(state="normal")
+            log_text.insert("end", message + "\n")
+            log_text.see("end")
+            log_text.configure(state="disabled")
+
+        root.after(0, _append)
+
+    def set_status(message: str) -> None:
+        root.after(0, status_var.set, message)
+
+    def process_inputs(inputs: List[str]) -> None:
+        try:
+            collected = collect_media_paths(inputs, args.recursive)
+        except (FileNotFoundError, ValueError) as exc:
+            append_log(f"Ошибка: {exc}")
+            root.after(0, lambda: messagebox.showerror("Ошибка", str(exc)))
+            return
+
+        if not collected:
+            set_status("Подходящие файлы не найдены или SRT уже существует")
+            return
+
+        for audio_path in collected:
+            set_status(f"Обработка {audio_path}")
+            try:
+                output_path = transcribe_audio_file(model, audio_path, args)
+            except Exception as exc:  # pylint: disable=broad-except
+                append_log(f"Ошибка при обработке {audio_path}: {exc}")
+                root.after(
+                    0,
+                    lambda p=audio_path, e=exc: messagebox.showerror(
+                        "Ошибка транскрибации", f"{p}: {e}"
+                    ),
+                )
+                if not args.ignore_errors:
+                    break
+                continue
+
+            if output_path:
+                append_log(f"Готово: {output_path}")
+                set_status(f"Субтитры сохранены в {output_path}")
+
+    def worker() -> None:
+        while not stop_event.is_set():
+            try:
+                inputs = task_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if inputs is None:
+                task_queue.task_done()
+                break
+            process_inputs(inputs)
+            task_queue.task_done()
+
+    worker_thread = threading.Thread(target=worker, daemon=True)
+    worker_thread.start()
+
+    def on_drop(event: "tk.Event[tk.Misc]") -> None:  # type: ignore[name-defined]
+        files = list(root.tk.splitlist(event.data))
+        if files:
+            append_log("Добавлены файлы: " + ", ".join(files))
+            task_queue.put(files)
+
+    drop_label.dnd_bind("<<Drop>>", on_drop)
+
+    def on_close() -> None:
+        stop_event.set()
+        task_queue.put(None)  # type: ignore[arg-type]
+        root.after(100, root.destroy)
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+
+    if initial_inputs:
+        task_queue.put(initial_inputs)
+
+    root.mainloop()
+    worker_thread.join(timeout=1)
+
+
+def load_asr_model(model_name: str, device: Optional[str]) -> "GigaAMModel":
+    """Import required dependencies and return an initialized ASR model."""
+
+    try:
+        import gigaam  # type: ignore
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "The 'gigaam' package is required. Install it with "
+            "'pip install gigaam[longform]'."
+        ) from exc
+
+    return gigaam.load_model(model_name, device=device)
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Transcribe audio into Russian SRT subtitles using GigaAM"
@@ -220,6 +404,14 @@ def main() -> None:
         action="store_false",
         help="Disable logging output",
     )
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help=(
+            "Launch a simple drag-and-drop window that keeps the model loaded "
+            "while the window remains open"
+        ),
+    )
     parser.set_defaults(ignore_errors=True, logging_enabled=True)
 
     args = parser.parse_args()
@@ -235,7 +427,7 @@ def main() -> None:
     if args.directories:
         combined_inputs.extend(args.directories)
 
-    if not combined_inputs:
+    if not combined_inputs and not args.gui:
         parser.error("Please provide at least one media file or directory to process.")
 
     try:
@@ -243,12 +435,16 @@ def main() -> None:
     except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
 
-    if not audio_inputs:
+    if not audio_inputs and not args.gui:
         parser.error(
             "No audio or video files without adjacent SRT subtitles were found."
         )
 
-    LOGGER.info("Discovered %d media file(s) for transcription", len(audio_inputs))
+    if audio_inputs:
+        LOGGER.info("Discovered %d media file(s) for transcription", len(audio_inputs))
+
+    if args.gui and args.output:
+        parser.error("--output cannot be used together with --gui mode")
 
     if args.output and len(audio_inputs) > 1:
         parser.error("--output can only be used with a single input media file")
@@ -256,29 +452,26 @@ def main() -> None:
     if args.hf_token:
         os.environ["HF_TOKEN"] = args.hf_token
 
-    model = gigaam.load_model(args.model, device=args.device)
-    for audio_path in audio_inputs:
-        LOGGER.info("Processing %s", audio_path)
-        wav_path, is_temp = ensure_wav(audio_path)
-        try:
-            segments = model.transcribe_longform(
-                wav_path,
-                max_duration=args.max_duration,
-                min_duration=args.min_duration,
-                new_chunk_threshold=args.new_chunk_threshold,
-            )
-        except Exception as exc:
-            if args.ignore_errors:
-                LOGGER.error("Transcription failed for %s: %s", audio_path, exc)
-                continue
-            raise
-        finally:
-            if is_temp:
-                os.remove(wav_path)
+    try:
+        model = load_asr_model(args.model, args.device)
+    except RuntimeError as exc:
+        parser.error(str(exc))
 
-        output_path = args.output or os.path.splitext(audio_path)[0] + ".srt"
-        write_srt(segments, output_path)
-        LOGGER.info("Saved subtitles to %s", output_path)
+    if args.gui:
+        try:
+            launch_drag_and_drop_gui(model, args, audio_inputs or None)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        return
+
+    for audio_path in audio_inputs:
+        output_path = transcribe_audio_file(
+            model, audio_path, args, output_override=args.output
+        )
+        if output_path is None and not args.ignore_errors:
+            # The helper only returns ``None`` when ``ignore_errors`` is enabled,
+            # so this branch should normally never be reached.
+            break
 
 
 if __name__ == "__main__":

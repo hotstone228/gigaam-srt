@@ -8,6 +8,9 @@ SRT format.
 
 ```bash
 pip install gigaam[longform]
+
+# Optional: enable drag-and-drop GUI mode
+pip install tkinterdnd2
 ```
 
 For non-WAV inputs the script relies on `ffmpeg` being available in your `PATH` to
@@ -49,3 +52,11 @@ Additional useful options:
 
 The script accepts any audio format supported by `ffmpeg` and writes a UTF‑8 encoded
 `.srt` file with time-coded Russian subtitles.
+
+### Drag-and-drop GUI mode
+
+To keep the model loaded in memory while processing multiple files, run the script with
+`--gui`. A window will open where you can drop audio or video files; each file is
+transcribed sequentially without reloading the ASR model. The same validation rules for
+supported media formats and existing `.srt` files apply. You may optionally pass initial
+inputs on the command line – they will be queued automatically when the window opens.
