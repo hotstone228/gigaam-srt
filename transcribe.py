@@ -129,6 +129,8 @@ def collect_media_paths(inputs: Iterable[str], recursive: bool) -> List[str]:
                 " recursively" if recursive else "",
             )
             for candidate in _iter_directory_files(original, recursive):
+                if "venv" in candidate:
+                    continue
                 if not is_media_file(candidate) or has_adjacent_srt(candidate):
                     continue
                 if candidate not in seen:
@@ -359,13 +361,13 @@ def main() -> None:
     parser.add_argument(
         "--max-duration",
         type=float,
-        default=22.0,
+        default=18.0,
         help="Maximum chunk duration in seconds",
     )
     parser.add_argument(
         "--min-duration",
         type=float,
-        default=15.0,
+        default=12.0,
         help="Minimum chunk duration before splitting",
     )
     parser.add_argument(
